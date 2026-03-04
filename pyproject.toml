@@ -12,6 +12,7 @@ dependencies = [
     "polars>=1.0",
     "pyarrow>=15.0",
     "pydantic>=2.6",
+    "lap>=0.5.12",
 ]
 
 [project.optional-dependencies]
