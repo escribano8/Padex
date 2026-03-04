@@ -1,0 +1,6 @@
+# Ignore all files in assets subdirectories (videos, images, model weights)
+# but keep the directory structure via .gitkeep
+*
+!*/
+!.gitignore
+!**/.gitkeep
