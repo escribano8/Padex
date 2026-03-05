@@ -89,6 +89,7 @@ def run(
     match_id: str = "M_001",
     start_frame: int = 0,
     end_frame: int | None = None,
+    device: str | None = None,
 ) -> None:
     """Run the full analysis pipeline.
 
@@ -103,6 +104,7 @@ def run(
         match_id: Match identifier.
         start_frame: First frame to process.
         end_frame: Last frame (exclusive). None = all.
+        device: Inference device ("cuda", "mps", "cpu"). None = auto-detect.
     """
     video_path = Path(video_path)
     output_path = Path(output_path)
@@ -115,7 +117,7 @@ def run(
     # Pass 1: Data generation
     # ------------------------------------------------------------------
     logger.info("Pass 1: Running tracking pipeline...")
-    pipeline = TrackingPipeline(video_path)
+    pipeline = TrackingPipeline(video_path, device=device)
     result = pipeline.run(start_frame=start_frame, end_frame=end_frame)
     logger.info(
         "Tracking complete: %d player frames, %d ball frames",
@@ -235,6 +237,12 @@ def main():
         help="Last frame (exclusive)",
     )
     parser.add_argument(
+        "--device",
+        default=None,
+        choices=["cuda", "mps", "cpu"],
+        help="Inference device (default: auto-detect GPU, fallback CPU)",
+    )
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging",
@@ -254,6 +262,7 @@ def main():
         match_id=args.match_id,
         start_frame=args.start_frame,
         end_frame=args.end_frame,
+        device=args.device,
     )
 
 
