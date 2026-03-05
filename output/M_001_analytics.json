@@ -1,0 +1,35 @@
+{
+  "schema_version": "0.1.0",
+  "match_id": "M_001",
+  "rally_metrics": [
+    {
+      "point_id": "S_001_01_02",
+      "rally_length": 2,
+      "duration_ms": 3899.999999999999,
+      "net_approaches": 0,
+      "wall_bounces": 0,
+      "attack_defense_switches": 0
+    }
+  ],
+  "player_metrics": [
+    {
+      "player_id": "P_007",
+      "winners": 1,
+      "errors": 0,
+      "forced_errors": 0,
+      "serve_percentage": 0.5,
+      "total_shots": 2,
+      "shot_type_counts": {
+        "serve": 1,
+        "unknown": 1
+      },
+      "shot_type_success": {
+        "serve": 0.0,
+        "unknown": 1.0
+      },
+      "distance_covered_m": 11.802625025471139,
+      "avg_position_depth": 0.37248156705081986
+    }
+  ],
+  "team_metrics": []
+}
