@@ -215,3 +215,6 @@ assets/weights/*.onnx
 # Pipeline output
 output/
 
+# Annotation data (frames, training data — too large for git)
+data/
+

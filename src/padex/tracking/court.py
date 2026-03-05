@@ -48,8 +48,8 @@ class PadelCourtModel:
     COURT_WIDTH: float = 10.0
     COURT_LENGTH: float = 20.0
     NET_Y: float = 10.0
-    SERVICE_NEAR_Y: float = 7.0
-    SERVICE_FAR_Y: float = 13.0
+    SERVICE_NEAR_Y: float = 3.0
+    SERVICE_FAR_Y: float = 17.0
 
     KEYPOINTS: dict[str, tuple[float, float]] = field(default_factory=lambda: {
         # Outer corners
@@ -60,14 +60,14 @@ class PadelCourtModel:
         # Net-sideline intersections
         "net_left": (0.0, 10.0),
         "net_right": (10.0, 10.0),
-        # Service line — near side (y=7)
-        "service_near_left": (0.0, 7.0),
-        "service_near_center": (5.0, 7.0),
-        "service_near_right": (10.0, 7.0),
-        # Service line — far side (y=13)
-        "service_far_left": (0.0, 13.0),
-        "service_far_center": (5.0, 13.0),
-        "service_far_right": (10.0, 13.0),
+        # Service line — near side (y=3.0, 7m from net)
+        "service_near_left": (0.0, 3.0),
+        "service_near_center": (5.0, 3.0),
+        "service_near_right": (10.0, 3.0),
+        # Service line — far side (y=17.0, 7m from net)
+        "service_far_left": (0.0, 17.0),
+        "service_far_center": (5.0, 17.0),
+        "service_far_right": (10.0, 17.0),
     })
 
     LINES: list[tuple[str, str]] = field(default_factory=lambda: [
@@ -432,7 +432,7 @@ class HoughLineKeypointDetector(KeypointDetector):
         # Build candidate match based on row/column structure
         # Court horizontal lines from top of image (far side) to bottom (near side):
         # Possible: top_baseline, service_far, net, service_near, bottom_baseline
-        court_h_lines_y = [20.0, 13.0, 10.0, 7.0, 0.0]
+        court_h_lines_y = [20.0, 17.0, 10.0, 3.0, 0.0]
         # For each row, figure out which court line it likely corresponds to
 
         n_rows = len(rows)
@@ -484,7 +484,7 @@ class HoughLineKeypointDetector(KeypointDetector):
         """Assign x-coordinates within a row to court keypoint x-positions."""
         # Possible x positions on court: 0.0 (left), 5.0 (center), 10.0 (right)
         # Center line only exists between service lines (y=7 and y=13)
-        has_center = court_y in (7.0, 13.0)
+        has_center = court_y in (3.0, 17.0)
 
         px_list: list[tuple[float, float]] = []
         m_list: list[tuple[float, float]] = []
@@ -648,6 +648,74 @@ class CourtDetector:
             homography_matrix=H.tolist(),
             court_keypoints_px=list(result.keypoints_px),
             court_keypoints_m=list(result.keypoints_m),
+            reprojection_error=error,
+        )
+
+    @staticmethod
+    def manual_calibration(
+        keypoints_px: dict[str, tuple[float, float]],
+        frame_width: int,
+        frame_height: int,
+    ) -> CourtCalibration:
+        """Create a CourtCalibration from manually annotated keypoints.
+
+        Use this when the broadcast camera is fixed and you prefer to mark
+        court keypoints once rather than relying on automatic detection.
+
+        Args:
+            keypoints_px: Mapping of keypoint name to pixel coordinates.
+                Must contain at least 4 keypoints that exist in
+                PadelCourtModel.KEYPOINTS (e.g. ``{"bottom_left": (100, 900),
+                "bottom_right": (1800, 900), ...}``).
+            frame_width: Video frame width in pixels.
+            frame_height: Video frame height in pixels.
+
+        Returns:
+            A CourtCalibration ready to pass to TrackingPipeline.
+
+        Raises:
+            ValueError: If fewer than 4 valid keypoints are provided or
+                homography computation fails.
+        """
+        court_kps = COURT_MODEL.KEYPOINTS
+        px_coords: list[tuple[float, float]] = []
+        m_coords: list[tuple[float, float]] = []
+
+        for name, px in keypoints_px.items():
+            if name not in court_kps:
+                logger.warning("Unknown keypoint '%s', skipping", name)
+                continue
+            px_coords.append(px)
+            m_coords.append(court_kps[name])
+
+        if len(px_coords) < 4:
+            raise ValueError(
+                f"Need at least 4 keypoints, got {len(px_coords)}. "
+                f"Valid names: {list(court_kps.keys())}"
+            )
+
+        src = np.array(px_coords, dtype=np.float64)
+        dst = np.array(m_coords, dtype=np.float64)
+
+        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, 3.0)
+        if H is None:
+            raise ValueError("Homography computation failed")
+
+        # Reprojection error
+        inlier_mask = mask.ravel().astype(bool)
+        src_in = src[inlier_mask]
+        dst_in = dst[inlier_mask]
+        projected = cv2.perspectiveTransform(
+            src_in.reshape(-1, 1, 2), H
+        ).reshape(-1, 2)
+        error = float(np.sqrt(np.mean(np.sum((projected - dst_in) ** 2, axis=1))))
+
+        return CourtCalibration(
+            frame_width=frame_width,
+            frame_height=frame_height,
+            homography_matrix=H.tolist(),
+            court_keypoints_px=list(px_coords),
+            court_keypoints_m=list(m_coords),
             reprojection_error=error,
         )
 
