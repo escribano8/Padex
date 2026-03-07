@@ -29,6 +29,9 @@ dev = [
 [dependency-groups]
 dev = ["padex[dev]"]
 
+[project.scripts]
+padex = "padex.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

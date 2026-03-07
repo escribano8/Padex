@@ -6,3 +6,7 @@ File Name: __init__.py
 Description:
     Layer 1: Raw tracking engine — CV pipeline for frame-by-frame processing.
 """
+
+from padex.tracking.pipeline import TrackingPipeline, TrackingResult
+
+__all__ = ["TrackingPipeline", "TrackingResult"]

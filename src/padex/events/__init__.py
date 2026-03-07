@@ -6,3 +6,8 @@ File Name: __init__.py
 Description:
     Layer 2: Event detection — derives discrete match events from tracking data.
 """
+
+from padex.events.bounce import BounceDetector
+from padex.events.shot import PoseBasedShotTypeClassifier, ShotDetector
+
+__all__ = ["BounceDetector", "PoseBasedShotTypeClassifier", "ShotDetector"]
