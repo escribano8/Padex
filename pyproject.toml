@@ -5,6 +5,16 @@ description = "Open-source Python toolkit that transforms padel match broadcast 
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
+authors = [{ name = "Xingnan Zhu" }]
+keywords = ["padel", "sports-analytics", "computer-vision", "tracking", "shot-detection"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Intended Audience :: Science/Research",
+]
 dependencies = [
     "numpy>=1.26",
     "opencv-python>=4.9",
@@ -26,11 +36,15 @@ dev = [
     "mypy>=1.9",
 ]
 
-[dependency-groups]
-dev = ["padex[dev]"]
+[project.urls]
+Repository = "https://github.com/rondo-labs/Padex"
+Issues = "https://github.com/rondo-labs/Padex/issues"
 
 [project.scripts]
 padex = "padex.cli:main"
+
+[dependency-groups]
+dev = ["padex[dev]"]
 
 [build-system]
 requires = ["hatchling"]
@@ -38,6 +52,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/padex"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/padex/", "tests/", "README.md", "LICENSE", "pyproject.toml"]
 
 [tool.ruff]
 target-version = "py311"
