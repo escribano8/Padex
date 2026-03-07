@@ -6,3 +6,7 @@ File Name: __init__.py
 Description:
     Data I/O — readers and writers for Parquet, JSONL, and video.
 """
+
+from padex.io.video import VideoReader, VideoWriter
+
+__all__ = ["VideoReader", "VideoWriter"]

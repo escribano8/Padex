@@ -224,9 +224,13 @@ class TrackNetBallDetectionStrategy(BallDetectionStrategy):
 
     def __init__(
         self,
-        model_path: str = "assets/weights/ball_detection_TrackNet.pt",
+        model_path: str | None = None,
         device: str | None = None,
     ) -> None:
+        if model_path is None:
+            from padex.weights import get_weight_path
+
+            model_path = str(get_weight_path("ball_detection_TrackNet.pt"))
         self.model_path = model_path
         self._device_str = device
         self._model = None
@@ -361,12 +365,16 @@ class SahiYoloBallDetectionStrategy(BallDetectionStrategy):
 
     def __init__(
         self,
-        model_path: str = "assets/weights/yolo26m.pt",
+        model_path: str | None = None,
         confidence_threshold: float = 0.25,
         slice_size: int = 512,
         overlap_ratio: float = 0.2,
         device: str | None = None,
     ) -> None:
+        if model_path is None:
+            from padex.weights import get_weight_path
+
+            model_path = str(get_weight_path("yolo26m.pt"))
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.slice_size = slice_size
@@ -590,11 +598,11 @@ class BallDetector:
             self.detection_strategy = detection_strategy
         elif use_tracknet:
             self.detection_strategy = TrackNetBallDetectionStrategy(
-                model_path=model_path or "assets/weights/ball_detection_TrackNet.pt",
+                model_path=model_path,
             )
         else:
             self.detection_strategy = SahiYoloBallDetectionStrategy(
-                model_path=model_path or "assets/weights/yolo26m.pt",
+                model_path=model_path,
                 confidence_threshold=confidence_threshold,
             )
         self.tracker = tracker or KalmanBallTracker()

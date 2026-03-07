@@ -119,11 +119,15 @@ class YoloPlayerDetectionStrategy(PlayerDetectionStrategy):
 
     def __init__(
         self,
-        model_path: str = "assets/weights/yolo26m.pt",
+        model_path: str | None = None,
         confidence_threshold: float = 0.5,
         device: str | None = None,
         imgsz: int = 1280,
     ) -> None:
+        if model_path is None:
+            from padex.weights import get_weight_path
+
+            model_path = str(get_weight_path("yolo26m.pt"))
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.device = device
@@ -369,11 +373,15 @@ class YoloPoseEstimationStrategy(PoseEstimationStrategy):
 
     def __init__(
         self,
-        model_path: str = "assets/weights/yolo26m-pose.pt",
+        model_path: str | None = None,
         confidence_threshold: float = 0.3,
         device: str | None = None,
         imgsz: int = 1280,
     ) -> None:
+        if model_path is None:
+            from padex.weights import get_weight_path
+
+            model_path = str(get_weight_path("yolo26m-pose.pt"))
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.device = device

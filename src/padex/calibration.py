@@ -1,53 +1,29 @@
 """
 Project: Padex
-File Created: 2026-03-05
+File Created: 2026-03-07
 Author: Xingnan Zhu
-File Name: manual_calibrate.py
+File Name: calibration.py
 Description:
-    Interactive manual court calibration tool.
+    Interactive court calibration tools.
 
-    Opens a video, lets the user pick a good frame, then guides them through
-    clicking 12 court keypoints.  Produces a CourtCalibration JSON that can
-    be loaded directly into TrackingPipeline.
-
-Usage:
-    python scripts/manual_calibrate.py assets/raw/video/match.mp4
-    python scripts/manual_calibrate.py assets/raw/video/match.mp4 -o calibration.json
-
-Controls:
-    Frame selection:
-        D / →       Next frame (+90 frames)
-        A / ←       Previous frame (-90 frames)
-        W / ↑       Jump forward (+900 frames)
-        S / ↓       Jump backward (-900 frames)
-        Enter       Confirm this frame and start labeling
-
-    Keypoint labeling:
-        Left-click  Place current keypoint
-        Z           Undo last keypoint
-        N           Skip current keypoint (if not visible)
-        Enter       Finish labeling (need >= 4 points)
-        Q / Esc     Quit without saving
+    Provides FrameSelector and KeypointLabeler for manual court keypoint
+    labeling, plus a convenience function interactive_calibrate() that
+    runs the full calibration workflow.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
-import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
-
+from padex.schemas.tracking import CourtCalibration
 from padex.tracking.court import COURT_MODEL, CourtDetector
+
+logger = logging.getLogger(__name__)
 
 # Keypoints in labeling order: corners first, then net, then service lines.
 KEYPOINT_ORDER = [
@@ -88,7 +64,7 @@ KEYPOINT_METERS = COURT_MODEL.KEYPOINTS
 class FrameSelector:
     """Phase 1: Let the user browse frames and pick a good one."""
 
-    def __init__(self, video_path: Path) -> None:
+    def __init__(self, video_path: str | Path) -> None:
         self.cap = cv2.VideoCapture(str(video_path))
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
@@ -114,13 +90,13 @@ class FrameSelector:
             elif key == 13:  # Enter
                 cv2.destroyAllWindows()
                 return self.frame.copy(), self.frame_id
-            elif key == ord("d") or key == 83:  # → right arrow
+            elif key == ord("d") or key == 83:  # right arrow
                 self._seek(90)
-            elif key == ord("a") or key == 81:  # ← left arrow
+            elif key == ord("a") or key == 81:  # left arrow
                 self._seek(-90)
-            elif key == ord("w") or key == 82:  # ↑ up arrow
+            elif key == ord("w") or key == 82:  # up arrow
                 self._seek(900)
-            elif key == ord("s") or key == 84:  # ↓ down arrow
+            elif key == ord("s") or key == 84:  # down arrow
                 self._seek(-900)
 
     def _seek(self, delta: int) -> None:
@@ -138,7 +114,6 @@ class FrameSelector:
         h, w = display.shape[:2]
         timestamp = self.frame_id / self.fps if self.fps > 0 else 0
 
-        # Info bar
         info = f"Frame {self.frame_id}/{self.total_frames}  |  {timestamp:.1f}s  |  {w}x{h}"
         cv2.putText(display, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
@@ -173,27 +148,26 @@ class KeypointLabeler:
 
             key = cv2.waitKey(30) & 0xFF
 
-            if key == ord("q") or key == 27:  # Quit
+            if key == ord("q") or key == 27:
                 cv2.destroyAllWindows()
                 return None
 
-            elif key == ord("z"):  # Undo
+            elif key == ord("z"):
                 self._undo()
 
-            elif key == ord("n"):  # Skip current keypoint
+            elif key == ord("n"):
                 if self.current_idx < len(KEYPOINT_ORDER):
                     name = KEYPOINT_ORDER[self.current_idx]
                     logger.info("Skipped: %s", name)
                     self.current_idx += 1
 
-            elif key == 13:  # Enter = finish
+            elif key == 13:
                 if len(self.labeled) >= 4:
                     cv2.destroyAllWindows()
                     return self.labeled
                 else:
                     logger.warning("Need at least 4 keypoints, have %d", len(self.labeled))
 
-            # Handle click
             if self.click_pos is not None and self.current_idx < len(KEYPOINT_ORDER):
                 name = KEYPOINT_ORDER[self.current_idx]
                 self.labeled[name] = (float(self.click_pos[0]), float(self.click_pos[1]))
@@ -201,7 +175,6 @@ class KeypointLabeler:
                 self.current_idx += 1
                 self.click_pos = None
 
-            # Auto-finish if all 12 placed
             if self.current_idx >= len(KEYPOINT_ORDER):
                 cv2.destroyAllWindows()
                 return self.labeled
@@ -213,9 +186,6 @@ class KeypointLabeler:
     def _undo(self) -> None:
         if self.current_idx > 0:
             self.current_idx -= 1
-            name = KEYPOINT_ORDER[self.current_idx]
-            # Find the last placed point to undo
-            # It might have been skipped, so walk back
             while self.current_idx >= 0:
                 name = KEYPOINT_ORDER[self.current_idx]
                 if name in self.labeled:
@@ -230,7 +200,6 @@ class KeypointLabeler:
     def _draw_overlay(self) -> np.ndarray:
         display = self.original.copy()
 
-        # Draw already-placed keypoints
         for name, (px, py) in self.labeled.items():
             color = KEYPOINT_COLORS[name]
             ix, iy = int(px), int(py)
@@ -241,7 +210,6 @@ class KeypointLabeler:
             label = f"{name} ({meters[0]},{meters[1]})"
             cv2.putText(display, label, (ix + 10, iy - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
 
-        # Current keypoint prompt
         if self.current_idx < len(KEYPOINT_ORDER):
             name = KEYPOINT_ORDER[self.current_idx]
             meters = KEYPOINT_METERS[name]
@@ -251,11 +219,9 @@ class KeypointLabeler:
             prompt = "All keypoints placed! Press Enter to confirm."
             color = (0, 255, 0)
 
-        # Prompt bar at top
         cv2.rectangle(display, (0, 0), (self.frame_w, 40), (0, 0, 0), -1)
         cv2.putText(display, prompt, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-        # Status bar at bottom
         status = f"Labeled: {len(self.labeled)}/12  |  Z: undo  N: skip  Enter: finish  Q: quit"
         cv2.rectangle(display, (0, self.frame_h - 35), (self.frame_w, self.frame_h), (0, 0, 0), -1)
         cv2.putText(display, status, (10, self.frame_h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
@@ -273,7 +239,6 @@ def verify_calibration(
 
     display = frame.copy()
 
-    # Project all 12 court keypoints to pixel space
     for name, (mx, my) in KEYPOINT_METERS.items():
         pt = np.array([[[mx, my]]], dtype=np.float64)
         projected = cv2.perspectiveTransform(pt, H_inv)
@@ -284,7 +249,6 @@ def verify_calibration(
         cv2.circle(display, (px, py), 7, (255, 255, 255), 1)
         cv2.putText(display, name, (px + 8, py - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
 
-    # Draw court lines
     for kp_a, kp_b in COURT_MODEL.LINES:
         ma = KEYPOINT_METERS[kp_a]
         mb = KEYPOINT_METERS[kp_b]
@@ -305,91 +269,68 @@ def verify_calibration(
     cv2.destroyAllWindows()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Interactive manual court calibration tool."
-    )
-    parser.add_argument("video", type=Path, help="Path to video file")
-    parser.add_argument(
-        "-o", "--output", type=Path, default=None,
-        help="Output JSON path (default: <video_stem>_calibration.json in current dir)",
-    )
-    args = parser.parse_args()
+def interactive_calibrate(
+    video_path: str | Path,
+    save_path: str | Path | None = None,
+) -> CourtCalibration | None:
+    """Run the full interactive calibration workflow.
 
-    if not args.video.exists():
-        logger.error("Video not found: %s", args.video)
-        sys.exit(1)
+    Opens a video, lets the user select a frame and click court keypoints,
+    then computes the homography and optionally saves to JSON.
 
-    output_path = args.output or Path(f"{args.video.stem}_calibration.json")
+    Args:
+        video_path: Path to the video file.
+        save_path: Where to save the calibration JSON. Defaults to
+            ``<video_stem>_calibration.json`` next to the video.
 
-    # Phase 1: Select a good frame
-    logger.info("Phase 1: Select a frame with good court visibility")
-    selector = FrameSelector(args.video)
+    Returns:
+        CourtCalibration if successful, None if cancelled.
+    """
+    video_path = Path(video_path)
+    if save_path is None:
+        save_path = video_path.with_name(video_path.stem + "_calibration.json")
+    else:
+        save_path = Path(save_path)
+
+    logger.info("=== Interactive Court Calibration ===")
+    logger.info("Phase 1: Browse to a frame with clear court lines, then press Enter")
+
+    selector = FrameSelector(video_path)
     result = selector.run()
     selector.release()
-
     if result is None:
-        logger.info("Cancelled.")
-        return
+        logger.warning("Calibration cancelled.")
+        return None
     frame, frame_id = result
     h, w = frame.shape[:2]
     logger.info("Selected frame %d (%dx%d)", frame_id, w, h)
 
-    # Phase 2: Label keypoints
-    logger.info("Phase 2: Click on court keypoints")
+    logger.info("Phase 2: Click the 12 court keypoints (N=skip, Z=undo, Enter=finish)")
     labeler = KeypointLabeler(frame)
     keypoints = labeler.run()
-
     if keypoints is None:
-        logger.info("Cancelled.")
-        return
+        logger.warning("Calibration cancelled.")
+        return None
 
-    logger.info("Labeled %d keypoints", len(keypoints))
-
-    # Phase 3: Compute calibration
+    logger.info("Labeled %d keypoints — computing homography…", len(keypoints))
     try:
         calibration = CourtDetector.manual_calibration(
             keypoints_px=keypoints,
             frame_width=w,
             frame_height=h,
         )
-    except ValueError as e:
-        logger.error("Calibration failed: %s", e)
-        sys.exit(1)
+    except ValueError as exc:
+        logger.error("Calibration failed: %s", exc)
+        return None
 
-    logger.info("Reprojection error: %.4f meters", calibration.reprojection_error or -1)
+    logger.info("Reprojection error: %.4f m", calibration.reprojection_error or -1)
 
-    # Save to JSON
     cal_dict = calibration.model_dump()
-    cal_dict["source_video"] = str(args.video)
+    cal_dict["source_video"] = str(video_path)
     cal_dict["source_frame_id"] = frame_id
     cal_dict["labeled_keypoints"] = {k: list(v) for k, v in keypoints.items()}
-
-    with open(output_path, "w") as f:
+    with open(save_path, "w") as f:
         json.dump(cal_dict, f, indent=2)
-    logger.info("Saved calibration: %s", output_path)
+    logger.info("Calibration saved: %s", save_path)
 
-    # Phase 4: Visual verification
-    logger.info("Phase 3: Verify — court lines projected onto frame")
-    verify_calibration(frame, cal_dict)
-
-    # Print usage hint
-    print("\n--- How to use this calibration ---")
-    print(f"""
-from padex.schemas.tracking import CourtCalibration
-from padex.tracking.pipeline import TrackingPipeline
-import json
-
-with open("{output_path}") as f:
-    cal = CourtCalibration(**json.load(f))
-
-pipeline = TrackingPipeline(
-    video_path="{args.video}",
-    manual_calibration=cal,
-)
-result = pipeline.run()
-""")
-
-
-if __name__ == "__main__":
-    main()
+    return calibration
