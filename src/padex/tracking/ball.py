@@ -5,8 +5,13 @@ Author: Xingnan Zhu
 File Name: ball.py
 Description:
     Ball detection and trajectory tracking.
-    Uses SAHI (Slicing Aided Hyper Inference) with YOLO for small-ball
-    detection, and a Kalman filter for cross-frame tracking and gap-filling.
+    Provides two detection strategies:
+    - TrackNetBallDetectionStrategy: lightweight CNN that processes 3
+      consecutive frames as a 9-channel input and outputs a heatmap.
+      Fast, purpose-built for small high-speed balls.
+    - SahiYoloBallDetectionStrategy: SAHI sliced YOLO. Slower but can
+      be used as a fallback or for single-frame detection.
+    Both feed into the same KalmanBallTracker for gap-filling.
 """
 
 from __future__ import annotations
@@ -86,6 +91,258 @@ class BallTracker(abc.ABC):
     def set_homography(self, H: np.ndarray | None) -> None:
         """Set or update the pixel-to-court homography matrix."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# TrackNet model definition
+# ---------------------------------------------------------------------------
+
+
+class _ConvBlock(object):
+    """Placeholder — actual implementation uses nn.Sequential inside model."""
+
+
+def _build_tracknet() -> "torch.nn.Module":
+    """Build the BallTrackerNet architecture matching the pretrained weights.
+
+    Architecture (VGG encoder-decoder, no skip connections):
+      Encoder:
+        conv1(9→64)  conv2(64→64)   → MaxPool
+        conv3(64→128) conv4(128→128) → MaxPool
+        conv5(128→256) conv6(256→256) conv7(256→256) → MaxPool
+        conv8(256→512) conv9(512→512) conv10(512→512)
+      Decoder (bilinear 2× upsample between groups):
+        conv11(512→256) conv12(256→256) conv13(256→256) → Upsample
+        conv14(256→128) conv15(128→128) → Upsample
+        conv16(128→64) conv17(64→64) → Upsample
+        conv18(64→256) → reshape + softmax
+
+    Input:  (B, 9, 360, 640)   — 3 frames × RGB stacked
+    Output: (B, 256, 360×640) after softmax → argmax → (B, 360, 640) heatmap
+    """
+    import torch.nn as nn
+
+    class _ConvBNReLU(nn.Module):
+        """Wraps Conv+ReLU+BN as a sub-module named 'block' to match checkpoint keys."""
+        def __init__(self, in_ch: int, out_ch: int) -> None:
+            super().__init__()
+            self.block = nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
+                nn.ReLU(inplace=True),
+                nn.BatchNorm2d(out_ch),
+            )
+        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            return self.block(x)
+
+    def conv_block(in_ch: int, out_ch: int) -> "_ConvBNReLU":
+        return _ConvBNReLU(in_ch, out_ch)
+
+    class BallTrackerNet(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            # Encoder
+            self.conv1 = conv_block(9, 64)
+            self.conv2 = conv_block(64, 64)
+            self.pool1 = nn.MaxPool2d(2, 2)
+            self.conv3 = conv_block(64, 128)
+            self.conv4 = conv_block(128, 128)
+            self.pool2 = nn.MaxPool2d(2, 2)
+            self.conv5 = conv_block(128, 256)
+            self.conv6 = conv_block(256, 256)
+            self.conv7 = conv_block(256, 256)
+            self.pool3 = nn.MaxPool2d(2, 2)
+            self.conv8 = conv_block(256, 512)
+            self.conv9 = conv_block(512, 512)
+            self.conv10 = conv_block(512, 512)
+            # Decoder
+            self.up1 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.conv11 = conv_block(512, 256)
+            self.conv12 = conv_block(256, 256)
+            self.conv13 = conv_block(256, 256)
+            self.up2 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.conv14 = conv_block(256, 128)
+            self.conv15 = conv_block(128, 128)
+            self.up3 = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
+            self.conv16 = conv_block(128, 64)
+            self.conv17 = conv_block(64, 64)
+            self.conv18 = conv_block(64, 256)
+            self.softmax = nn.Softmax(dim=1)
+
+        def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+            batch = x.shape[0]
+            x = self.conv1(x)
+            x = self.conv2(x)
+            x = self.pool1(x)
+            x = self.conv3(x)
+            x = self.conv4(x)
+            x = self.pool2(x)
+            x = self.conv5(x)
+            x = self.conv6(x)
+            x = self.conv7(x)
+            x = self.pool3(x)
+            x = self.conv8(x)
+            x = self.conv9(x)
+            x = self.conv10(x)
+            x = self.up1(x)
+            x = self.conv11(x)
+            x = self.conv12(x)
+            x = self.conv13(x)
+            x = self.up2(x)
+            x = self.conv14(x)
+            x = self.conv15(x)
+            x = self.up3(x)
+            x = self.conv16(x)
+            x = self.conv17(x)
+            x = self.conv18(x)
+            # Reshape to (batch, 256, H*W) then softmax
+            x = x.reshape(batch, 256, -1)
+            x = self.softmax(x)
+            return x
+
+    return BallTrackerNet()
+
+
+# ---------------------------------------------------------------------------
+# TrackNet ball detection strategy
+# ---------------------------------------------------------------------------
+
+
+class TrackNetBallDetectionStrategy(BallDetectionStrategy):
+    """Ball detection using TrackNet: 3-frame heatmap CNN.
+
+    Processes 3 consecutive frames stacked as a 9-channel input (640×360).
+    Outputs a heatmap; extracts ball center via argmax + Hough circles.
+
+    Significantly faster than SAHI+YOLO: one forward pass per frame instead
+    of ~20 sliced YOLO inferences.
+    """
+
+    # TrackNet was trained on 640×360
+    INFER_W: int = 640
+    INFER_H: int = 360
+    HEATMAP_THRESHOLD: int = 127
+
+    def __init__(
+        self,
+        model_path: str = "assets/weights/ball_detection_TrackNet.pt",
+        device: str | None = None,
+    ) -> None:
+        self.model_path = model_path
+        self._device_str = device
+        self._model = None
+        self._frame_buffer: list[np.ndarray] = []  # last 3 resized frames
+
+    def _ensure_model(self) -> None:
+        if self._model is not None:
+            return
+        import torch
+
+        device = self._device_str or self._auto_device()
+        self._torch_device = torch.device(device)
+
+        model = _build_tracknet()
+        state = torch.load(
+            self.model_path, map_location="cpu", weights_only=False
+        )
+        model.load_state_dict(state)
+        model.eval()
+        model.to(self._torch_device)
+        self._model = model
+        logger.info("TrackNet loaded on %s", device)
+
+    @staticmethod
+    def _auto_device() -> str:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
+            if torch.backends.mps.is_available():
+                return "mps"
+        except Exception:
+            pass
+        return "cpu"
+
+    def detect(
+        self, frame: np.ndarray, frame_id: int, timestamp_ms: float
+    ) -> RawBallDetection | None:
+        self._ensure_model()
+        import torch
+
+        # Resize and buffer this frame
+        resized = cv2.resize(frame, (self.INFER_W, self.INFER_H))
+        self._frame_buffer.append(resized)
+        if len(self._frame_buffer) > 3:
+            self._frame_buffer.pop(0)
+
+        # Need 3 frames to run inference
+        if len(self._frame_buffer) < 3:
+            return None
+
+        f0, f1, f2 = self._frame_buffer
+        # Stack RGB channels: newest frame first (matches training convention)
+        imgs = np.concatenate([f2, f1, f0], axis=2).astype(np.float32) / 255.0
+        tensor = torch.from_numpy(imgs.transpose(2, 0, 1)).unsqueeze(0)
+        tensor = tensor.to(self._torch_device)
+
+        with torch.no_grad():
+            out = self._model(tensor)  # (1, 256, H*W)
+
+        # Argmax over 256 channels → (1, H*W) → (H, W)
+        heatmap = out.argmax(dim=1).squeeze().cpu().numpy()
+        heatmap = heatmap.reshape(self.INFER_H, self.INFER_W).astype(np.uint8)
+
+        x_pred, y_pred, confidence = self._postprocess(heatmap, frame.shape)
+        if x_pred is None:
+            return None
+
+        h_orig, w_orig = frame.shape[:2]
+        r = 4  # approximate ball radius in original coords
+        scale_x = w_orig / self.INFER_W
+        scale_y = h_orig / self.INFER_H
+        bx = x_pred  # already scaled in _postprocess
+        by = y_pred
+
+        return RawBallDetection(
+            bbox=BoundingBox(
+                x1=float(bx - r), y1=float(by - r),
+                x2=float(bx + r), y2=float(by + r),
+            ),
+            confidence=float(confidence),
+            frame_id=frame_id,
+            timestamp_ms=timestamp_ms,
+        )
+
+    def _postprocess(
+        self,
+        heatmap: np.ndarray,
+        orig_shape: tuple,
+    ) -> tuple[float | None, float | None, float]:
+        """Extract ball center from heatmap. Returns (x, y, confidence) in original pixel coords."""
+        h_orig, w_orig = orig_shape[:2]
+        scale_x = w_orig / self.INFER_W
+        scale_y = h_orig / self.INFER_H
+
+        # Normalize to 0-255 and threshold
+        feature = (heatmap.astype(np.float32) / heatmap.max() * 255).astype(np.uint8) if heatmap.max() > 0 else heatmap
+        _, binary = cv2.threshold(feature, self.HEATMAP_THRESHOLD, 255, cv2.THRESH_BINARY)
+
+        circles = cv2.HoughCircles(
+            binary,
+            cv2.HOUGH_GRADIENT,
+            dp=1, minDist=1,
+            param1=50, param2=2,
+            minRadius=2, maxRadius=7,
+        )
+
+        if circles is None or len(circles[0]) != 1:
+            return None, None, 0.0
+
+        cx, cy, _ = circles[0][0]
+        confidence = float(heatmap[int(cy), int(cx)]) / 255.0
+        return float(cx * scale_x), float(cy * scale_y), confidence
+
+    def reset(self) -> None:
+        self._frame_buffer.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -327,11 +584,19 @@ class BallDetector:
         tracker: BallTracker | None = None,
         model_path: str | None = None,
         confidence_threshold: float = 0.25,
+        use_tracknet: bool = True,
     ) -> None:
-        self.detection_strategy = detection_strategy or SahiYoloBallDetectionStrategy(
-            model_path=model_path or "assets/weights/yolo26m.pt",
-            confidence_threshold=confidence_threshold,
-        )
+        if detection_strategy is not None:
+            self.detection_strategy = detection_strategy
+        elif use_tracknet:
+            self.detection_strategy = TrackNetBallDetectionStrategy(
+                model_path=model_path or "assets/weights/ball_detection_TrackNet.pt",
+            )
+        else:
+            self.detection_strategy = SahiYoloBallDetectionStrategy(
+                model_path=model_path or "assets/weights/yolo26m.pt",
+                confidence_threshold=confidence_threshold,
+            )
         self.tracker = tracker or KalmanBallTracker()
 
     def detect(
