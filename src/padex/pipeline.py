@@ -101,8 +101,14 @@ class Padex:
             with open(cal_sibling) as f:
                 return CourtCalibration(**json.load(f))
 
-        logger.info("No calibration found — will attempt auto-detection")
-        return None
+        raise ValueError(
+            f"No court calibration found for '{self.video_path.name}'. "
+            f"Run interactive calibration first:\n"
+            f"  cal = padex.interactive_calibrate(\"{self.video_path}\")\n"
+            f"  result = padex.process(\"{self.video_path}\", calibration=cal)\n"
+            f"Or from CLI:\n"
+            f"  padex calibrate \"{self.video_path}\""
+        )
 
     def run(self) -> PadexResult:
         """Run the full pipeline: tracking -> bounce detection -> shot classification."""

@@ -30,11 +30,28 @@ def _setup_logging() -> None:
 
 def cmd_process(args: argparse.Namespace) -> None:
     """Run the full Padex pipeline."""
+    from padex.calibration import interactive_calibrate
     from padex.pipeline import Padex
+
+    calibration = args.calibration
+
+    # If no calibration provided, check for sibling file; if missing, run interactive
+    if calibration is None:
+        sibling = args.video.with_name(args.video.stem + "_calibration.json")
+        if sibling.exists():
+            calibration = sibling
+        else:
+            logger = logging.getLogger("padex.cli")
+            logger.info("No calibration found — launching interactive calibration")
+            cal = interactive_calibrate(args.video)
+            if cal is None:
+                logger.error("Calibration required. Exiting.")
+                sys.exit(1)
+            calibration = args.video.with_name(args.video.stem + "_calibration.json")
 
     padex = Padex(
         video_path=args.video,
-        calibration=args.calibration,
+        calibration=calibration,
         cache_tracking=not args.no_cache,
     )
     result = padex.run()
